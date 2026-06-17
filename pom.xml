@@ -50,7 +50,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>FearDiscordBot</mainClass>
+                                    <mainClass>bot.FearDiscordBot</mainClass>
                                 </transformer>
                             </transformers>
                             <finalName>discord-bot</finalName>
