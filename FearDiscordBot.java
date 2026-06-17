@@ -32,11 +32,10 @@ import java.util.regex.Pattern;
 
 public class FearDiscordBot extends ListenerAdapter {
 
-    // --- НАСТРОЙКИ ---
-    private static final String TOKEN = "";
-    private static final long LOG_CHANNEL_ID = 1512539256696864949L;
-
-    private static String SITE_ACCESS_TOKEN = "";
+    // --- НАСТРОЙКИ (ТЕПЕРЬ БЕРУТСЯ С СЕРВЕРА) ---
+    private static final String TOKEN = System.getenv("DISCORD_TOKEN");
+    private static final long LOG_CHANNEL_ID = (System.getenv("LOG_CHANNEL_ID") != null) ? Long.parseLong(System.getenv("LOG_CHANNEL_ID")) : 0L;
+    private static String SITE_ACCESS_TOKEN = System.getenv("SITE_ACCESS_TOKEN");
 
     // Хранилище для передачи данных между командой и нажатием кнопок
     // Ключ - ID сообщения, Значение - данные запроса (теперь содержит список SteamID)
@@ -45,6 +44,11 @@ public class FearDiscordBot extends ListenerAdapter {
     private static final HttpClient httpClient = HttpClient.newBuilder().build();
 
     public static void main(String[] args) {
+        if (TOKEN == null || TOKEN.isEmpty()) {
+            System.err.println("ОШИБКА: Токен бота не найден! Добавьте переменную DISCORD_TOKEN на сервере.");
+            return;
+        }
+
         JDA jda = JDABuilder.createLight(TOKEN)
                 .addEventListeners(new FearDiscordBot())
                 .build();
@@ -112,7 +116,7 @@ public class FearDiscordBot extends ListenerAdapter {
 
         TextChannel channel = event.getJDA().getTextChannelById(LOG_CHANNEL_ID);
         if (channel == null) {
-            event.reply("❌ Не могу найти канал для логов. Проверь LOG_CHANNEL_ID.").setEphemeral(true).queue();
+            event.reply("❌ Не могу найти канал для логов. Проверь LOG_CHANNEL_ID на сервере.").setEphemeral(true).queue();
             return;
         }
 
