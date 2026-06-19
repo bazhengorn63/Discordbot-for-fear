@@ -1,4 +1,5 @@
 package bot;
+
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
@@ -19,10 +20,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.awt.Color;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,16 +37,44 @@ import java.util.regex.Pattern;
 
 public class FearDiscordBot extends ListenerAdapter {
 
-    // --- НАСТРОЙКИ (ТЕПЕРЬ БЕРУТСЯ С СЕРВЕРА) ---
     private static final String TOKEN = System.getenv("DISCORD_TOKEN");
     private static final long LOG_CHANNEL_ID = (System.getenv("LOG_CHANNEL_ID") != null) ? Long.parseLong(System.getenv("LOG_CHANNEL_ID")) : 0L;
-    private static String SITE_ACCESS_TOKEN = System.getenv("SITE_ACCESS_TOKEN");
+    
+    private static String SITE_ACCESS_TOKEN = "";
+    private static final String COOKIE_FILE_PATH = "data/cookie.txt"; // Путь к файлу с токеном
 
-    // Хранилище для передачи данных между командой и нажатием кнопок
-    // Ключ - ID сообщения, Значение - данные запроса (теперь содержит список SteamID)
     private static final Map<String, BanRequestData> activeRequests = new ConcurrentHashMap<>();
-
     private static final HttpClient httpClient = HttpClient.newBuilder().build();
+
+    // --- ФУНКЦИИ КЭШИРОВАНИЯ ТОКЕНА ---
+    private static void loadCookie() {
+        try {
+            Path path = Path.of(COOKIE_FILE_PATH);
+            if (Files.exists(path)) {
+                SITE_ACCESS_TOKEN = Files.readString(path).trim();
+                System.out.println("✅ Токен сайта успешно загружен из кэша (файла).");
+            } else {
+                // Если файла нет, пытаемся взять из переменных окружения (как резерв)
+                SITE_ACCESS_TOKEN = System.getenv("SITE_ACCESS_TOKEN");
+                if (SITE_ACCESS_TOKEN == null) SITE_ACCESS_TOKEN = "";
+                System.out.println("⚠️ Файл с кэшем токена не найден. Используется значение по умолчанию.");
+            }
+        } catch (IOException e) {
+            System.err.println("❌ Ошибка при чтении кэша токена: " + e.getMessage());
+        }
+    }
+
+    private static void saveCookie(String token) {
+        try {
+            Path path = Path.of(COOKIE_FILE_PATH);
+            Files.createDirectories(path.getParent()); // Создаем папку data, если её нет
+            Files.writeString(path, token);
+            System.out.println("✅ Новый токен сохранен в файл.");
+        } catch (IOException e) {
+            System.err.println("❌ Ошибка при сохранении кэша токена: " + e.getMessage());
+        }
+    }
+    // ----------------------------------
 
     public static void main(String[] args) {
         if (TOKEN == null || TOKEN.isEmpty()) {
@@ -50,11 +82,13 @@ public class FearDiscordBot extends ListenerAdapter {
             return;
         }
 
+        // Пытаемся загрузить токен из файла перед стартом бота
+        loadCookie();
+
         JDA jda = JDABuilder.createLight(TOKEN)
                 .addEventListeners(new FearDiscordBot())
                 .build();
 
-        // Регистрация слэш-команд
         jda.updateCommands().addCommands(
                 Commands.slash("cookieadmin", "Обновить токен сайта (access_token)")
                         .addOption(OptionType.STRING, "token", "Новый токен", true)
@@ -84,7 +118,11 @@ public class FearDiscordBot extends ListenerAdapter {
     private void handleCookieAdmin(SlashCommandInteractionEvent event) {
         String token = event.getOption("token").getAsString().trim();
         SITE_ACCESS_TOKEN = token;
-        event.reply("✅ Токен успешно загружен в память бота! (Длина: " + token.length() + ")")
+        
+        // Сохраняем токен в файл!
+        saveCookie(token); 
+        
+        event.reply("✅ Токен успешно загружен в память и **сохранен в кэш**! (Длина: " + token.length() + ")")
                 .setEphemeral(true).queue();
     }
 
@@ -94,11 +132,9 @@ public class FearDiscordBot extends ListenerAdapter {
         String reason = event.getOption("reason").getAsString();
         String siteReason = event.getOption("site_reason").getAsString();
 
-        // Разбиваем строку по пробелам на массив
         String[] steamidArray = steamidsInput.split("\\s+");
         List<String> validSteamIds = new ArrayList<>();
 
-        // Проверяем каждый SteamID
         for (String id : steamidArray) {
             if (!id.matches("^765\\d{14}$")) {
                 event.reply("❌ **Ошибка:** Неверный формат SteamID у `" + id + "`!\nОн должен состоять ровно из 17 цифр и начинаться с `765`.")
@@ -108,7 +144,6 @@ public class FearDiscordBot extends ListenerAdapter {
             validSteamIds.add(id);
         }
 
-        // Валидация времени
         if (!time.equals("0") && !time.toLowerCase().matches("^\\d+[dhm]$")) {
             event.reply("❌ **Ошибка:** Неверный формат времени!\nИспользуй числа и букву **d** (дни), **h** (часы) или **m** (минуты).\n*Примеры: 60d, 12h, 30m*")
                     .setEphemeral(true).queue();
@@ -121,7 +156,6 @@ public class FearDiscordBot extends ListenerAdapter {
             return;
         }
 
-        // Генерируем список ссылок на профили
         StringBuilder profiles = new StringBuilder();
         for (String s : validSteamIds) {
             profiles.append("[`").append(s).append("`](https://fearproject.ru/profile/").append(s).append(") ");
@@ -161,9 +195,7 @@ public class FearDiscordBot extends ListenerAdapter {
                 return;
             }
 
-            // Отложенный ответ, так как API запросы будут идти один за другим
             event.deferEdit().queue(hook -> {
-                // Временно отключаем кнопки, пока идет обработка, чтобы не кликали дважды
                 hook.editOriginalComponents(ActionRow.of(
                         Button.success("accept_btn", "Обработка...").asDisabled(),
                         Button.danger("reject_btn", "Отклонить").asDisabled()
@@ -172,13 +204,11 @@ public class FearDiscordBot extends ListenerAdapter {
 
             EmbedBuilder updatedEmbed = new EmbedBuilder(event.getMessage().getEmbeds().get(0));
 
-            // Очищаем старые поля "Результат", если это повторная попытка (Retry)
             List<MessageEmbed.Field> fields = new ArrayList<>(updatedEmbed.getFields());
             fields.removeIf(f -> f.getName() != null && f.getName().contains("Результат") || f.getName().contains("Решение"));
             updatedEmbed.clearFields();
             for (MessageEmbed.Field f : fields) updatedEmbed.addField(f);
 
-            // Обработка "Отклонить"
             if (buttonId.equals("reject_btn")) {
                 activeRequests.remove(messageId);
                 updatedEmbed.setColor(Color.RED);
@@ -191,14 +221,12 @@ public class FearDiscordBot extends ListenerAdapter {
                 return;
             }
 
-            // Асинхронная поочередная обработка (Accept или Retry)
             CompletableFuture.supplyAsync(() -> {
                 List<String> successIds = new ArrayList<>();
                 List<String> failedIds = new ArrayList<>();
                 StringBuilder errors = new StringBuilder();
 
                 for (String id : requestData.steamids()) {
-                    // Ждем выполнения API для конкретного ID
                     ApiResult res = updateBanApi(id, requestData.timeStr(), requestData.siteReason()).join();
 
                     if (res.success()) {
@@ -207,16 +235,13 @@ public class FearDiscordBot extends ListenerAdapter {
                         failedIds.add(id);
                         errors.append("`").append(id).append("`: ").append(res.message()).append("\n");
                     }
-
-                    // ЗАЩИТА ОТ ЛИМИТОВ API: Пауза 800 миллисекунд между запросами
                     try { Thread.sleep(800); } catch (InterruptedException ignored) {}
                 }
                 return new ProcessResult(successIds, failedIds, errors.toString());
             }).thenAccept(result -> {
 
                 if (result.failedIds().isEmpty()) {
-                    // ВСЁ УСПЕШНО
-                    activeRequests.remove(messageId); // Удаляем из памяти, больше обрабатывать не нужно
+                    activeRequests.remove(messageId); 
                     updatedEmbed.setColor(Color.GREEN);
                     updatedEmbed.addField("Результат", "✅ Все SteamID успешно обработаны администратором " + event.getUser().getAsMention() + "!", false);
 
@@ -226,8 +251,6 @@ public class FearDiscordBot extends ListenerAdapter {
                                     Button.danger("reject_btn", "Отклонить").asDisabled()
                             )).queue();
                 } else {
-                    // ЕСТЬ ОШИБКИ (ЧАСТИЧНО ИЛИ ПОЛНОСТЬЮ)
-                    // Обновляем список в памяти ТОЛЬКО на те ID, которые выдали ошибку
                     activeRequests.put(messageId, new BanRequestData(result.failedIds(), requestData.timeStr(), requestData.siteReason()));
                     updatedEmbed.setColor(Color.ORANGE);
 
@@ -239,13 +262,11 @@ public class FearDiscordBot extends ListenerAdapter {
                     }
                     resText.append("**Возникла ошибка API:**\n").append(result.errorMessage());
 
-                    // Если текст слишком длинный, обрезаем
                     String resStr = resText.toString();
                     if (resStr.length() > 1024) resStr = resStr.substring(0, 1020) + "...";
 
                     updatedEmbed.addField("Результат (Требует внимания)", resStr, false);
 
-                    // Добавляем кнопку Retry (Синюю)
                     event.getHook().editOriginalEmbeds(updatedEmbed.build())
                             .setComponents(ActionRow.of(
                                     Button.success("accept_btn", "Принять").asDisabled(),
@@ -256,8 +277,6 @@ public class FearDiscordBot extends ListenerAdapter {
             });
         }
     }
-
-    // --- ФУНКЦИИ ДЛЯ РАБОТЫ С API САЙТА ---
 
     private long parseDurationToSeconds(String timeStr) {
         if (timeStr.equals("0")) return 0;
@@ -282,7 +301,6 @@ public class FearDiscordBot extends ListenerAdapter {
 
         return CompletableFuture.supplyAsync(() -> {
             try {
-                // 1. ИЩЕМ АКТИВНЫЙ БАН (GET)
                 String searchUrl = String.format("https://api.fearproject.ru/punishments/search?q=%s&page=1&limit=10&type=1", steamid);
 
                 HttpRequest searchReq = HttpRequest.newBuilder()
@@ -325,13 +343,12 @@ public class FearDiscordBot extends ListenerAdapter {
                 int pid = activeBan.getInt("id");
                 String name = activeBan.optString("name", steamid);
 
-                // 2. ОТПРАВЛЯЕМ ЗАПРОС НА ИЗМЕНЕНИЕ (PUT)
                 JSONObject payload = new JSONObject();
                 payload.put("name", name);
                 payload.put("steamid", steamid);
                 payload.put("reason", siteReason);
                 payload.put("duration", parseDurationToSeconds(timeStr));
-                payload.put("punish_type", 0); // 0 = Бан
+                payload.put("punish_type", 0);
 
                 HttpRequest updateReq = HttpRequest.newBuilder()
                         .uri(URI.create("https://api.fearproject.ru/punishments/update/" + pid))
@@ -359,8 +376,6 @@ public class FearDiscordBot extends ListenerAdapter {
         });
     }
 
-    // --- ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ (Record-ы) ---
-    // Внимание: теперь храним List<String> steamids
     private record BanRequestData(List<String> steamids, String timeStr, String siteReason) {}
     private record ApiResult(boolean success, String message) {}
     private record ProcessResult(List<String> successIds, List<String> failedIds, String errorMessage) {}
