@@ -41,7 +41,7 @@ public class FearDiscordBot extends ListenerAdapter {
     private static final long LOG_CHANNEL_ID = (System.getenv("LOG_CHANNEL_ID") != null) ? Long.parseLong(System.getenv("LOG_CHANNEL_ID")) : 0L;
     
     private static String SITE_ACCESS_TOKEN = "";
-    private static final String COOKIE_FILE_PATH = "data/cookie.txt"; // Путь к файлу с токеном
+    private static final String COOKIE_FILE_PATH = "data/cookie.txt";
 
     private static final Map<String, BanRequestData> activeRequests = new ConcurrentHashMap<>();
     private static final HttpClient httpClient = HttpClient.newBuilder().build();
@@ -54,7 +54,6 @@ public class FearDiscordBot extends ListenerAdapter {
                 SITE_ACCESS_TOKEN = Files.readString(path).trim();
                 System.out.println("✅ Токен сайта успешно загружен из кэша (файла).");
             } else {
-                // Если файла нет, пытаемся взять из переменных окружения (как резерв)
                 SITE_ACCESS_TOKEN = System.getenv("SITE_ACCESS_TOKEN");
                 if (SITE_ACCESS_TOKEN == null) SITE_ACCESS_TOKEN = "";
                 System.out.println("⚠️ Файл с кэшем токена не найден. Используется значение по умолчанию.");
@@ -67,7 +66,7 @@ public class FearDiscordBot extends ListenerAdapter {
     private static void saveCookie(String token) {
         try {
             Path path = Path.of(COOKIE_FILE_PATH);
-            Files.createDirectories(path.getParent()); // Создаем папку data, если её нет
+            Files.createDirectories(path.getParent());
             Files.writeString(path, token);
             System.out.println("✅ Новый токен сохранен в файл.");
         } catch (IOException e) {
@@ -119,7 +118,6 @@ public class FearDiscordBot extends ListenerAdapter {
         String token = event.getOption("token").getAsString().trim();
         SITE_ACCESS_TOKEN = token;
         
-        // Сохраняем токен в файл!
         saveCookie(token); 
         
         event.reply("✅ Токен успешно загружен в память и **сохранен в кэш**! (Длина: " + token.length() + ")")
@@ -136,12 +134,17 @@ public class FearDiscordBot extends ListenerAdapter {
         List<String> validSteamIds = new ArrayList<>();
 
         for (String id : steamidArray) {
+            // Проверка на правильный формат
             if (!id.matches("^765\\d{14}$")) {
                 event.reply("❌ **Ошибка:** Неверный формат SteamID у `" + id + "`!\nОн должен состоять ровно из 17 цифр и начинаться с `765`.")
                         .setEphemeral(true).queue();
                 return;
             }
-            validSteamIds.add(id);
+            
+            // Защита от дубликатов: добавляем, только если такого ID еще нет в списке
+            if (!validSteamIds.contains(id)) {
+                validSteamIds.add(id);
+            }
         }
 
         if (!time.equals("0") && !time.toLowerCase().matches("^\\d+[dhm]$")) {
@@ -178,7 +181,7 @@ public class FearDiscordBot extends ListenerAdapter {
                     activeRequests.put(message.getId(), new BanRequestData(validSteamIds, time, siteReason));
                 });
 
-        event.reply("✅ Запрос на " + validSteamIds.size() + " SteamID успешно отправлен!").setEphemeral(true).queue();
+        event.reply("✅ Запрос на " + validSteamIds.size() + " уникальных SteamID успешно отправлен!").setEphemeral(true).queue();
     }
 
     @Override
